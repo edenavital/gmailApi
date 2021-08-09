@@ -1,16 +1,23 @@
 const fs = require("fs");
 const readline = require("readline");
 const { google } = require("googleapis");
-const jsdom = require("jsdom");
-const { JSDOM } = jsdom;
+const { JSDOM } = require("jsdom");
 const open = require("open");
+const base64 = require("js-base64").Base64;
 
 // If modifying these scopes, delete token.json.
 const SCOPES = [
   "https://www.googleapis.com/auth/gmail.readonly",
   "https://mail.google.com",
   "https://www.googleapis.com/auth/gmail.modify",
+  "https://www.googleapis.com/auth/gmail.labels",
 ];
+
+//The id of our label - OPENED_VIA_BOT
+const ADD_LABEL = "Label_4568886910162244987";
+const TRASH_LABEL = "TRASH";
+
+// TODO: refresh token.json when it's expired - automate the flow
 
 // The file token.json stores the user's access and refresh tokens, and is
 // created automatically when the authorization flow completes for the first
@@ -114,14 +121,17 @@ async function getListOfEmails(auth) {
 
       // Getting the actual data and not just ids
       const messagesData = await Promise.all(messagesIdList);
-      const filteredMessages = filterUnrelevantMessage(messagesData);
+      let filteredMessages = filterUnrelevantMessage(messagesData);
+
+      // for testing purposes - running only 3 recent emails
+      filteredMessages = filteredMessages.splice(0, 5);
       console.log("AFTER FILTER - length", filteredMessages.length);
 
-      filteredMessages.forEach(async (message, index) => {
+      filteredMessages.forEach(async (message) => {
         console.log(message);
         // Store the data of the email for convinient purposes
         // writeDataFile(currentMsg, "./emailData.json", true);
-        decodeMessageData(message);
+        decodeMessageData(message, gmail);
       });
     }
   } catch (err) {
@@ -129,7 +139,7 @@ async function getListOfEmails(auth) {
   }
 }
 
-isRelevantEmail = (email) => {
+const isRelevantEmail = (email) => {
   if (email?.data?.payload?.headers) {
     const headers = email.data.payload.headers;
     for (let i = 0; i < headers.length; i++) {
@@ -139,7 +149,7 @@ isRelevantEmail = (email) => {
         name === "From" &&
         value.includes("no-reply@komo.co.il" || "komo.co.il" || "KOMO.co.il")
       ) {
-        console.log("FOUND");
+        console.log("FOUND RELEVANT EMAIL");
         return true;
       }
     }
@@ -148,28 +158,23 @@ isRelevantEmail = (email) => {
 };
 
 // Getting raw messages and filter out unrelevant messages
-filterUnrelevantMessage = (messages) => {
+const filterUnrelevantMessage = (messages) => {
   return messages.filter((msg) => isRelevantEmail(msg));
 };
 
 // Getting a message, and decode it's data into raw html
-decodeMessageData = (message) => {
-  const base64 = require("js-base64").Base64;
-  const bodyData = message.data.payload.parts[0].body.data;
-  // replace <&amp;> with empty string and you got a working link !
+const decodeMessageData = (messageData, gmail) => {
+  const bodyData = messageData.data.payload.parts[0].body.data;
 
   // Simplified code: you'd need to check for multipart.
-  const data = base64.decode(bodyData.replace(/-/g, "+").replace(/_/g, "/"));
-  // If you're going to use a different library other than js-base64,
-  // you may need to replace some characters before passing it to the decoder.
+  const html = base64.decode(bodyData.replace(/-/g, "+").replace(/_/g, "/"));
   // console.log(data);
   // writeDataFile(data, "./savedHtml.html");
-
-  openRelevantLinks(data);
+  openRelevantLinks(html, messageData, gmail);
 };
 
 // getting the html data of a single email and open the relevant link.
-openRelevantLinks = (html) => {
+const openRelevantLinks = (html, messageData, gmail) => {
   const dom = new JSDOM(html);
   const elements = dom.window.document.getElementsByTagName("a");
   // console.log(dom.window.document.getElementsByTagName("a"));
@@ -180,8 +185,55 @@ openRelevantLinks = (html) => {
     if (elem.text.includes("צפיה בפרטים המלאים")) {
       console.log(elem.href);
       open(elem.href);
+      addLabelToEmail(messageData, gmail);
     }
   }
+};
+
+/**
+ * Lists the labels in the user's account.
+ *
+ * @param {google.auth.OAuth2} auth An authorized OAuth2 client.
+ */
+// function listLabels(auth) {
+//   const gmail = google.gmail({ version: "v1", auth });
+//   gmail.users.labels.list(
+//     {
+//       userId: "me",
+//     },
+//     (err, res) => {
+//       if (err) return console.log("The API returned an error: " + err);
+//       const labels = res.data.labels;
+//       if (labels.length) {
+//         console.log("Labels:");
+//         labels.forEach((label) => {
+//           console.log(`- ${label.name} - ${label.id}`);
+//         });
+//       } else {
+//         console.log("No labels found.");
+//       }
+//     }
+//   );
+// }
+
+const addLabelToEmail = async (messageData, gmail) => {
+  gmail.users.messages.modify(
+    {
+      userId: "me",
+      id: messageData.data.id,
+      resource: {
+        addLabelIds: [ADD_LABEL, TRASH_LABEL],
+        removeLabelIds: [],
+      },
+    },
+    function (err) {
+      if (err) {
+        console.error("Failed to mark email as read! Error: " + err);
+        return;
+      }
+      console.log("Successfully marked email as read", messageData.data.id);
+    }
+  );
 };
 
 // Store json or string into a file
